@@ -32,6 +32,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exception_handlers import http_exception_handler
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from supabase import Client, create_client
 
@@ -43,6 +44,33 @@ SUPABASE_KEY = "sb_publishable_iYy80sIBU2grdC4mSzYp1A_G6LZEUTy"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI(title="LILA Games - ETL Backend Engine")
+
+# CORS: ``allow_origins=["*"]`` is not enough when the browser uses credentialed requests
+# (``credentials: 'include'`` / cookies) — the spec forbids ``Access-Control-Allow-Origin: *`` then.
+# Lovable previews/production often use https://<id>.lovable.dev (see Lovable docs).
+# Add your Netlify/Vercel/custom domain here if you deploy the frontend elsewhere.
+_CORS_LOCAL_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8080",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8080",
+    "https://lovable.dev",
+]
+# Subdomains of Lovable + optional other hosts (adjust if your preview URL differs).
+_CORS_ORIGIN_REGEX = r"https://([a-zA-Z0-9-]+\.)*lovable\.dev$|https://([a-zA-Z0-9-]+\.)*lovable\.app$"
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_CORS_LOCAL_ORIGINS,
+    allow_origin_regex=_CORS_ORIGIN_REGEX,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    allow_credentials=True,
+    max_age=86400,
+)
 
 SUPABASE_BATCH_SIZE = 1000
 
