@@ -1,17 +1,4 @@
-"""
-FastAPI ETL: zip of Parquet ``*.nakama-0`` files -> merge, transform, upload rows to Supabase.
 
-Parquet schema (sample file):
-  user_id, match_id: string
-  map_id: string (e.g. ``Lockdown``) — may also appear as bytes in other exports
-  x, y, z: float
-  ts: timestamp[ms]
-  event: binary UTF-8 (e.g. ``Position``, ``Loot``) -> decoded to text
-
-Output rows: base telemetry, ``log_date`` (from the upload form), ``event``, then ``is_bot``, ``pixel_x``, ``pixel_y`` -> table ``match_logs``.
-
-Run: uvicorn main:app --reload --host 0.0.0.0 --port 8000
-"""
 
 from __future__ import annotations
 
@@ -89,7 +76,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> Respo
         content={"detail": msg, "error_type": type(exc).__name__},
     )
 
-# Minimap: 1024×1024 image; world (x,z) -> pixels (origin + scale per map).
+
+# Minimap: 1024x1024 image; world (x,z) -> pixels (origin + scale per map).
 MAP_CONFIGS: dict[str, dict[str, float]] = {
     "AmbroseValley": {"scale": 900.0, "origin_x": -370.0, "origin_z": -473.0},
     "GrandRift": {"scale": 581.0, "origin_x": -290.0, "origin_z": -290.0},
@@ -128,6 +116,30 @@ def _decode_event(val: Any) -> str:
     if isinstance(val, (bytes, bytearray, memoryview)):
         return bytes(val).decode("utf-8", errors="replace")
     return str(val)
+
+
+def _fix_timestamps(df: pd.DataFrame) -> pd.DataFrame:
+    """Fix the ``ts`` column whose Parquet metadata says ``timestamp[ms]``
+    but whose stored integers are actually **Unix seconds**.
+
+    PyArrow reads the raw ints as milliseconds, producing dates around
+    1970-01-21.  Extracting the stored integers and reinterpreting them
+    as seconds yields the correct wall-clock times (February 2026).
+    """
+    if "ts" not in df.columns:
+        return df
+
+    df = df.copy()
+
+    # .view(np.int64) on datetime64 gives the underlying stored integers.
+    # Because Arrow declared timestamp[ms], pandas stores datetime64[ms]
+    # and the int64 view already equals the raw Parquet ints (in ms units).
+    raw_ints = df["ts"].values.view(np.int64)
+
+    # Reinterpret those integers as *seconds* since epoch.
+    df["ts"] = pd.to_datetime(raw_ints, unit="s", utc=True)
+
+    return df
 
 
 def _add_minimap_pixels(df: pd.DataFrame) -> pd.DataFrame:
@@ -296,6 +308,13 @@ async def process_daily_logs(
 
         if "event" in master_df.columns:
             master_df["event"] = master_df["event"].map(_decode_event)
+
+        # --- FIX: Timestamp reinterpretation ---
+        # The Parquet metadata declares ts as timestamp[ms], but the stored
+        # integers are actually Unix *seconds*.  Without this fix every
+        # timestamp lands near 1970-01-21 and match durations appear as
+        # sub-second (instead of the real 6-15 minutes).
+        master_df = _fix_timestamps(master_df)
 
         if "user_id" in master_df.columns:
             has_human_uuid = master_df["user_id"].astype(str).str.contains(
